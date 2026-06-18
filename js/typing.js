@@ -51,6 +51,7 @@
       { code: 'Digit0', label: '0', base: '0', shift: ')' },
       { code: 'Minus', label: '-', base: '-', shift: '_' },
       { code: 'Equal', label: '=', base: '=', shift: '+' },
+      { code: 'Backspace', label: '⌫', type: 'action', w: 'wide-2' },
     ],
     [
       { code: 'KeyQ', label: 'q', base: 'q', shift: 'Q' },
@@ -79,8 +80,10 @@
       { code: 'KeyL', label: 'l', base: 'l', shift: 'L' },
       { code: 'Semicolon', label: ';', base: ';', shift: ':' },
       { code: 'Quote', label: "'", base: "'", shift: '"' },
+      { code: 'Enter', label: 'Enter ↵', type: 'action', w: 'wide-2' },
     ],
     [
+      { code: 'ShiftLeft', label: '⇧ Shift', type: 'action', w: 'wide-3' },
       { code: 'KeyZ', label: 'z', base: 'z', shift: 'Z' },
       { code: 'KeyX', label: 'x', base: 'x', shift: 'X' },
       { code: 'KeyC', label: 'c', base: 'c', shift: 'C' },
@@ -345,12 +348,24 @@
   }
 
   function feedChar(ch) {
-    const out = processAtCursor((engine) => engine.processChar(ch, 0));
+    const engine = activeEngine();
+    if (!engine) return;
+    // Always insert \n and \t directly at cursor (engine with eat:true swallows them)
+    if (ch === '\n' || ch === '\t') {
+      const fullText = typed.value;
+      const pos = typed.selectionStart;
+      console.log('feedChar \\n: pos=', pos, 'fullText=', JSON.stringify(fullText));
+      const newText = fullText.slice(0, pos) + ch + fullText.slice(pos);
+      engine.setContext(newText);
+      console.log('feedChar \\n: newText=', JSON.stringify(newText));
+      render(pos + ch.length);
+      return;
+    }
+    const out = processAtCursor(function (eng) { return eng.processChar(ch, 0); });
     if (!out) return;
     if (out.result.handled) {
       render(out.cursorPos);
     } else {
-      const engine = activeEngine();
       // Manually insert char at cursor position
       const fullText = typed.value;
       const pos = typed.selectionStart;
@@ -449,59 +464,108 @@
       const rowEl = document.createElement('div');
       rowEl.className = 'kb-row';
       for (const entry of row) {
+        const isAction = entry.type === 'action';
         const key = document.createElement('button');
-        key.className = 'key' + (entry.w ? ' ' + entry.w : '');
+        key.className = 'key' + (entry.w ? ' ' + entry.w : '') + (isAction ? ' action-key' : '');
         key.type = 'button';
         // Keep focus on the textarea so physical Shift/CapsLock tracking keeps
         // working after a click. tabIndex=-1 makes the button non-focusable;
         // we refocus the textarea explicitly in typeKey() as a safety net.
         key.tabIndex = -1;
 
-        const cached = engine ? (layoutCache[entry.code] || { base: '', shift: '' }) : { base: '', shift: '' };
-        const baseGlyph = cached.base;
-        const shiftGlyph = cached.shift;
+        // Highlight the Shift key when shift layer is active
+        if (entry.code === 'ShiftLeft' && shiftLayer) {
+          key.classList.add('shift-active');
+        }
 
-        // shift glyph (top-right) — highlighted when shift layer active
-        const shiftEl = document.createElement('span');
-        shiftEl.className = 'shift-glyph' + (shiftLayer ? ' active' : '');
-        shiftEl.textContent = shiftGlyph || '';
-        key.appendChild(shiftEl);
-
-        // base glyph (center) — dimmed when shift layer active
-        const baseEl = document.createElement('span');
-        baseEl.className = 'base-glyph';
-        if (shiftLayer) baseEl.classList.add('faded');
-        else if (!baseGlyph) baseEl.classList.add('dim');
-        if (entry.code === 'Space') {
-          baseEl.textContent = 'space';
+        if (isAction) {
+          // Action keys: show only the label text (no glyphs, no US label)
+          const baseEl = document.createElement('span');
+          baseEl.className = 'base-glyph';
+          baseEl.textContent = entry.label;
+          key.appendChild(baseEl);
         } else {
-          baseEl.textContent = baseGlyph || '·';
-        }
-        key.appendChild(baseEl);
+          const cached = engine ? (layoutCache[entry.code] || { base: '', shift: '' }) : { base: '', shift: '' };
+          const baseGlyph = cached.base;
+          const shiftGlyph = cached.shift;
 
-        // tiny US label (bottom-left) for orientation
-        if (entry.code !== 'Space') {
-          const lab = document.createElement('span');
-          lab.className = 'us-label';
-          lab.textContent = entry.label;
-          key.appendChild(lab);
+          // shift glyph (top-right) — highlighted when shift layer active
+          const shiftEl = document.createElement('span');
+          shiftEl.className = 'shift-glyph' + (shiftLayer ? ' active' : '');
+          shiftEl.textContent = shiftGlyph || '';
+          key.appendChild(shiftEl);
+
+          // base glyph (center) — dimmed when shift layer active
+          const baseEl = document.createElement('span');
+          baseEl.className = 'base-glyph';
+          if (shiftLayer) baseEl.classList.add('faded');
+          else if (!baseGlyph) baseEl.classList.add('dim');
+          if (entry.code === 'Space') {
+            baseEl.textContent = 'space';
+          } else {
+            baseEl.textContent = baseGlyph || '·';
+          }
+          key.appendChild(baseEl);
+
+          // tiny US label (bottom-left) for orientation
+          if (entry.code !== 'Space') {
+            const lab = document.createElement('span');
+            lab.className = 'us-label';
+            lab.textContent = entry.label;
+            key.appendChild(lab);
+          }
         }
 
-        // click to type. Read the live shift state from the event itself
-        // (e.shiftKey) rather than the render-time closure — that way clicking
-        // while physically holding Shift always types the shifted glyph, even
-        // though focus has moved to the button.
         // Block mousedown so the button never steals focus from the textarea;
         // this keeps physical Shift/CapsLock tracking alive during clicks.
-        key.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
-        key.addEventListener('click', function (ev) {
-          typeKey(entry, !!ev.shiftKey);
-        });
-        // right-click always forces shifted glyph
-        key.addEventListener('contextmenu', function (e) {
-          e.preventDefault();
-          typeKey(entry, true);
-        });
+        if (entry.code === 'Backspace') {
+          // Auto-repeat on long-press for Backspace
+          let repeatTimer = null;
+          let repeatInterval = null;
+          const startRepeat = function () {
+            typeKey(entry, false);
+            repeatTimer = setTimeout(function () {
+              repeatInterval = setInterval(function () { typeKey(entry, false); }, 50);
+            }, 400);
+          };
+          const stopRepeat = function () {
+            clearTimeout(repeatTimer); clearInterval(repeatInterval);
+            repeatTimer = null; repeatInterval = null;
+          };
+          key.addEventListener('mousedown', function (ev) {
+            ev.preventDefault();
+            startRepeat();
+          });
+          key.addEventListener('mouseup', stopRepeat);
+          key.addEventListener('mouseleave', stopRepeat);
+          key.addEventListener('touchstart', function (ev) {
+            ev.preventDefault(); startRepeat();
+          });
+          key.addEventListener('touchend', stopRepeat);
+          key.addEventListener('touchcancel', stopRepeat);
+        } else {
+          key.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+          // Use pointerdown for action keys (Shift/Enter) for immediate response
+          if (isAction) {
+            key.addEventListener('pointerdown', function (ev) {
+              ev.preventDefault();
+              typeKey(entry, !!ev.shiftKey);
+            });
+            key.addEventListener('touchstart', function (ev) {
+              ev.preventDefault();
+              typeKey(entry, false);
+            });
+          } else {
+            key.addEventListener('click', function (ev) {
+              typeKey(entry, !!ev.shiftKey);
+            });
+            // right-click always forces shifted glyph
+            key.addEventListener('contextmenu', function (e) {
+              e.preventDefault();
+              typeKey(entry, true);
+            });
+          }
+        }
 
         rowEl.appendChild(key);
       }
@@ -514,6 +578,11 @@
   function buildLayoutCache(engine) {
     for (const row of ROWS) {
       for (const entry of row) {
+        // Skip action keys (Shift/Enter/Backspace) — they don't produce glyphs
+        if (entry.type === 'action') {
+          layoutCache[entry.code] = { base: '', shift: '' };
+          continue;
+        }
         layoutCache[entry.code] = probeKey(engine, entry);
       }
     }
@@ -522,9 +591,58 @@
   // Type a key from the on-screen keyboard (click).
   function typeKey(entry, shift) {
     typed.focus();
+
+    // Handle action keys (Shift / Enter / Backspace)
+    if (entry.type === 'action') {
+      if (entry.code === 'ShiftLeft') {
+        shiftHeld = !shiftHeld;
+        renderKeyboard();
+        return;
+      }
+      if (entry.code === 'Enter') {
+        console.log('Enter clicked, kmEnabled:', kmEnabled, 'engine:', !!activeEngine(), 'selStart:', typed.selectionStart, 'value:', JSON.stringify(typed.value));
+        if (!kmEnabled || !activeEngine()) {
+          insertAtCaret('\n');
+        } else {
+          const selStart = typed.selectionStart, selEnd = typed.selectionEnd;
+          if (selStart !== selEnd) deleteRange(selStart, selEnd);
+          feedChar('\n');
+        }
+        return;
+      }
+      if (entry.code === 'Backspace') {
+        if (!kmEnabled || !activeEngine()) {
+          const s = typed.selectionStart, e = typed.selectionEnd;
+          if (s !== e) {
+            typed.value = typed.value.slice(0, s) + typed.value.slice(e);
+            typed.selectionStart = typed.selectionEnd = s;
+          } else if (s > 0) {
+            const cp = [...typed.value.slice(0, s)];
+            cp.pop();
+            typed.value = cp.join('') + typed.value.slice(e);
+            typed.selectionStart = typed.selectionEnd = cp.join('').length;
+          }
+        } else {
+          const engine = activeEngine();
+          const selStart = typed.selectionStart, selEnd = typed.selectionEnd;
+          if (selStart !== selEnd) {
+            deleteRange(selStart, selEnd);
+          } else if (selStart > 0) {
+            const out = processAtCursor(function (eng) { return eng.processBackspace(0); }, true);
+            if (out && out.result.handled) render(out.cursorPos);
+          }
+        }
+        return;
+      }
+      return;
+    }
+
+    // Use shifted glyph when on-screen Shift is toggled or physical Shift held
+    const effectiveShift = shift || shiftHeld;
+
     if (!kmEnabled || !activeEngine()) {
       // OFF: append the literal char
-      const ch = shift ? entry.shift : entry.base;
+      const ch = effectiveShift ? entry.shift : entry.base;
       if (ch && ch !== ' ') {
         insertAtCaret(ch);
       } else if (entry.code === 'Space') {
@@ -539,12 +657,12 @@
     // route exactly like a physical keypress
     if (CODE_TO_VKEY.hasOwnProperty(entry.code)) {
       const vk = CODE_TO_VKEY[entry.code];
-      const out = processAtCursor((eng) => eng.processVKey(vk, shift ? SHIFT_MASK : 0));
+      const out = processAtCursor((eng) => eng.processVKey(vk, effectiveShift ? SHIFT_MASK : 0));
       if (out) {
-        if (!out.result.handled) feedChar(shift ? entry.shift : entry.base); else render(out.cursorPos);
+        if (!out.result.handled) feedChar(effectiveShift ? entry.shift : entry.base); else render(out.cursorPos);
       }
     } else {
-      feedChar(shift ? entry.shift : entry.base);
+      feedChar(effectiveShift ? entry.shift : entry.base);
     }
   }
 
