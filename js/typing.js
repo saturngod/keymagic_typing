@@ -18,7 +18,8 @@
   // ---- DOM ----
   const typed = document.getElementById('typed');
   const kbSelect = document.getElementById('kb-select');
-  const badge = document.getElementById('status-badge');
+  const toggle = document.getElementById('status-toggle');
+  const toggleLabel = toggle.querySelector('.toggle-label');
   const keyboardEl = document.getElementById('keyboard');
   const btnClear = document.getElementById('btn-clear');
 
@@ -182,14 +183,27 @@
     typed.focus();
   }
   function updateBadge() {
+    const label = currentName || '';
     if (kmEnabled) {
-      badge.textContent = 'ON · ' + (currentName || '');
-      badge.className = 'badge on';
+      toggle.classList.remove('off');
+      toggle.classList.add('on');
+      toggle.setAttribute('aria-checked', 'true');
+      toggleLabel.textContent = 'ON' + (label ? ' · ' + label : '');
     } else {
-      badge.textContent = 'OFF' + (currentName ? ' · ' + currentName : '');
-      badge.className = 'badge off';
+      toggle.classList.remove('on');
+      toggle.classList.add('off');
+      toggle.setAttribute('aria-checked', 'false');
+      toggleLabel.textContent = 'OFF' + (label ? ' · ' + label : '');
     }
   }
+
+  // Click (or tap) the ON/OFF switch to toggle the input method — same effect
+  // as Ctrl+Shift, but usable on touch devices and discoverable on screen.
+  function handleToggleClick(ev) {
+    ev.preventDefault();
+    setEnabled(!kmEnabled);
+  }
+  toggle.addEventListener('click', handleToggleClick);
 
   // =====================================================================
   // Keystroke handling
