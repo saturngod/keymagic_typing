@@ -242,13 +242,17 @@
       if (hasSelection) {
         deleteRange(selStart, selEnd);
       } else if (e.key === 'Backspace') {
-        const res = engine.processBackspace(0);
-        if (res.handled) render();
-      } else if (selStart < engine.getContext().length) {
-        const ctx = engine.getContext();
-        engine.setContext(ctx.slice(0, selStart) + ctx.slice(selStart + 1));
+        if (selStart > 0) {
+          const out = processAtCursor((engine) => engine.processBackspace(0), true);
+          if (out && out.result.handled) render(out.cursorPos);
+        }
+      } else if (selStart < typed.value.length) {
+        // Delete: remove char at cursor (doesn't go through engine matching)
+        const ctx = typed.value;
+        const newCtx = ctx.slice(0, selStart) + ctx.slice(selStart + 1);
+        engine.setContext(newCtx);
         engine.contextHistory.length = 0;
-        render();
+        render(selStart);
       }
       return;
     }
@@ -257,9 +261,19 @@
     if (e.key === ' ') {
       e.preventDefault();
       if (hasSelection) deleteRange(selStart, selEnd);
-      const res = engine.processVKey(0x20, 0);
-      if (!res.handled) engine.setContext(engine.getContext() + ' ');
-      render();
+      const out = processAtCursor((eng) => eng.processVKey(0x20, 0));
+      if (out) {
+        if (!out.result.handled) {
+          // Manually insert space at cursor
+          const fullText = typed.value;
+          const pos = typed.selectionStart;
+          const newText = fullText.slice(0, pos) + ' ' + fullText.slice(pos);
+          engine.setContext(newText);
+          render(pos + 1);
+        } else {
+          render(out.cursorPos);
+        }
+      }
       return;
     }
     // OEM punctuation keys: try vkey, fall back to char.
@@ -268,8 +282,10 @@
       if (hasSelection) deleteRange(selStart, selEnd);
       const vk = CODE_TO_VKEY[e.code];
       const mods = e.shiftKey ? SHIFT_MASK : 0;
-      const res = engine.processVKey(vk, mods);
-      if (!res.handled) feedChar(e.key); else render();
+      const out = processAtCursor((eng) => eng.processVKey(vk, mods));
+      if (out) {
+        if (!out.result.handled) feedChar(e.key); else render(out.cursorPos);
+      }
       return;
     }
     if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') return;
@@ -295,12 +311,53 @@
     if (shiftHeld) { shiftHeld = false; renderKeyboard(); }
   });
 
-  function feedChar(ch) {
+  // Run an engine operation (processChar, processVKey, processBackspace) with
+  // only the text before the cursor as context. This ensures typing happens
+  // at the cursor position, not at the end of the text.
+  function processAtCursor(operation, keepHistory = false) {
     const engine = activeEngine();
-    if (!engine) return;
-    const res = engine.processChar(ch, 0);
-    if (res.handled) render();
-    else { engine.setContext(engine.getContext() + ch); render(); }
+    if (!engine) return null;
+    const fullText = typed.value;
+    const cursorPos = typed.selectionStart;
+    const beforeCursor = fullText.slice(0, cursorPos);
+    const afterCursor = fullText.slice(cursorPos);
+    const savedHistory = [...engine.contextHistory];
+    // Set context to only the text before cursor
+    engine.setContext(beforeCursor);
+    engine.contextHistory = [];
+    // Run the operation
+    const result = operation(engine);
+    // Get the processed text before cursor
+    const newBefore = engine.getContext();
+    // Reconstruct full text
+    const newFullText = newBefore + afterCursor;
+    engine.setContext(newFullText);
+    // Restore or keep history
+    if (keepHistory) {
+      // For backspace: keep the engine's history (it tracks before-cursor states)
+      const beforeHistory = engine.contextHistory;
+      engine.contextHistory = beforeHistory;
+    } else {
+      // For other ops: restore original history
+      engine.contextHistory = savedHistory;
+    }
+    return { result, cursorPos: newBefore.length, text: newFullText };
+  }
+
+  function feedChar(ch) {
+    const out = processAtCursor((engine) => engine.processChar(ch, 0));
+    if (!out) return;
+    if (out.result.handled) {
+      render(out.cursorPos);
+    } else {
+      const engine = activeEngine();
+      // Manually insert char at cursor position
+      const fullText = typed.value;
+      const pos = typed.selectionStart;
+      const newText = fullText.slice(0, pos) + ch + fullText.slice(pos);
+      engine.setContext(newText);
+      render(pos + ch.length);
+    }
   }
 
   function deleteRange(from, to) {
@@ -312,14 +369,16 @@
     if (from >= to) return;
     engine.setContext(ctx.slice(0, from) + ctx.slice(to));
     engine.contextHistory.length = 0;
-    render();
+    render(from);
   }
 
-  function render() {
+  function render(cursorPos) {
     const engine = activeEngine();
     const ctx = engine ? engine.getContext() : typed.value;
     typed.value = ctx;
-    typed.selectionStart = typed.selectionEnd = ctx.length;
+    // If cursorPos provided, use it; otherwise default to end
+    const pos = (typeof cursorPos === 'number') ? cursorPos : ctx.length;
+    typed.selectionStart = typed.selectionEnd = pos;
   }
 
   // If the user edits directly while ON (paste/cut), resync the engine.
@@ -480,8 +539,10 @@
     // route exactly like a physical keypress
     if (CODE_TO_VKEY.hasOwnProperty(entry.code)) {
       const vk = CODE_TO_VKEY[entry.code];
-      const res = engine.processVKey(vk, shift ? SHIFT_MASK : 0);
-      if (!res.handled) feedChar(shift ? entry.shift : entry.base); else render();
+      const out = processAtCursor((eng) => eng.processVKey(vk, shift ? SHIFT_MASK : 0));
+      if (out) {
+        if (!out.result.handled) feedChar(shift ? entry.shift : entry.base); else render(out.cursorPos);
+      }
     } else {
       feedChar(shift ? entry.shift : entry.base);
     }
